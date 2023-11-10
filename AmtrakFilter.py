@@ -162,6 +162,8 @@ insert_query = """
 INSERT INTO gis (count, segment, lat, long)
 VALUES (?, ?, ?, ?);
 """
+
+#loop through all segments and extract all coordinates, convert each segment from WGS84 to lat/long, and store segment data in database
 count = 0
 for i in range(0,35):
     count += 1
