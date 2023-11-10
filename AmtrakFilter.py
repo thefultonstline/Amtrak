@@ -3,7 +3,8 @@ import sqlite3
 import geopandas as gpd
 import utm
 
-def output(filename, rows):
+#function for generating updated GTFS files
+def output(filename, rows): 
     
     with open(filename + '.txt', mode='w') as file: 
         column_names = [description[0] for description in cursor.description]
@@ -12,8 +13,10 @@ def output(filename, rows):
         for row in rows:
             file.write(','.join(map(str, row)) + '\n')
 
+ #connect to a database for data to be stored
 db_connection = sqlite3.connect('gtfs_database.db')
 
+#store route data in  the database
 routestxt = pd.read_csv('USGTFS/routes.txt')
 
 routes_schema = """
@@ -29,6 +32,7 @@ CREATE TABLE IF NOT EXISTS routes (
 
 db_connection.execute(routes_schema)
 
+#filter out routes that we are not concerned with
 cursor = db_connection.cursor()
 
 cursor.execute(f'DELETE FROM routes')
@@ -40,10 +44,7 @@ cursor.execute(f'DELETE FROM routes WHERE {condition}')
 
 db_connection.commit()
 
-cursor.execute(f'SELECT * FROM routes')
-rows = cursor.fetchall()
-output('routes', rows)
-
+#add trips to database
 tripstxt = pd.read_csv('USGTFS/trips.txt')
 
 trips_schema = """
@@ -64,7 +65,7 @@ cursor.execute(f'DELETE FROM trips')
 
 tripstxt.to_sql('trips', db_connection, if_exists='replace', index=False)
 
-
+#remove all trips for routes that are not in database
 delete_query = f'''
     DELETE FROM trips
     WHERE route_id NOT IN (SELECT route_id FROM routes)
@@ -73,10 +74,12 @@ cursor.execute(delete_query)
 
 db_connection.commit()   
 
+#generate updated trips file SHOULD BE MOVED TO BOTTOM
 cursor.execute(f'SELECT * FROM trips')
 rows = cursor.fetchall()
-output('trips', rows)
+output('trips', rows)#generates updated
 
+#add stops times data to database
 stoptimestxt = pd.read_csv('USGTFS/stop_times.txt')
 
 stoptimes_schema = """
@@ -93,7 +96,7 @@ CREATE TABLE IF NOT EXISTS stoptimes (
     timepoint INTEGER
 );
 """
-
+#remove irrelevant stop time data
 db_connection.execute(stoptimes_schema)
 cursor.execute(f'DELETE FROM stoptimes')
 
@@ -106,6 +109,7 @@ delete_query = f'''
 cursor.execute(delete_query)
 db_connection.commit() 
 
+#add stop data to database
 stopstxt = pd.read_csv('USGTFS/stops.txt')
 
 stops_schema = """
@@ -121,7 +125,7 @@ CREATE TABLE IF NOT EXISTS stops (
     parent_station TEXT
 );
 """
-
+#filter out stops that are not in use
 db_connection.execute(stops_schema)
 cursor.execute(f'DELETE FROM stops')
 
@@ -134,6 +138,7 @@ delete_query = f'''
 cursor.execute(delete_query)
 db_connection.commit() 
 
+#create a table for all the GIS data and which
 cursor.execute(f'DROP TABLE IF EXISTS gis')
 db_connection.commit() 
 
@@ -148,9 +153,10 @@ CREATE TABLE IF NOT EXISTS gis (
 db_connection.execute(gis_schema)
 db_connection.commit() 
 
+#read the shp file
 gisdata = gpd.read_file('Amtrakgis/AMTRAK.shp')
 
-multilines = [0, 2, 22, 24, 29]
+multilines = [0, 2, 22, 24, 29]#the shp has lines and multlines that contain lines. Out of 34 segments, 5 are multilines
 
 insert_query = """
 INSERT INTO gis (count, segment, lat, long)
@@ -174,6 +180,7 @@ for i in range(0,35):
     db_connection.commit()
 
 
+#create a map in the database. Each GIS segment is assigned to a station. 
 cursor.execute(f'DROP TABLE IF EXISTS map')
 db_connection.commit() 
 
@@ -201,6 +208,7 @@ def insertmap(stopid, rsegment, rsegment2, lsegment, lsegment2, rstop, lstop, bs
     cursor.execute(insert_query, record_values)
     db_connection.commit()
 
+#hardcode the map in the database with current stop, right segments, left segments, next stop on right, nex stop on left, and previous stop
 insertmap('NYP', 22, None, None, None, 'YNY', None, None)
 insertmap('YNY', 21, None, None, None,'CRT', None, 'NYP')
 insertmap('CRT', 1, None, None, None, 'POU', None, 'YNY')
@@ -228,6 +236,7 @@ insertmap('BFX', 7, None, None, None, None, None, 'BFX')
 insertmap('SLQ', None, None, None, None, 'MTR', None, None)
 insertmap('MTR', None, None, None, None, None, None, 'SLQ')
 
+#delete stop times from the GTFS for stops that are not in this map (some trains may go to Boston instead of NYP)
 delete_query = f'''
     DELETE FROM stoptimes
     WHERE stop_id NOT IN (SELECT stopid FROM map)
@@ -238,9 +247,11 @@ db_connection.commit()
 cursor.execute(f'SELECT trip_id FROM trips')
 trips = cursor.fetchall()
 
+#create place for shape data in database
 cursor.execute(f'DROP TABLE IF EXISTS shapes')
 db_connection.commit() 
 
+#what is b again?
 shapes_schema = """
 CREATE TABLE IF NOT EXISTS map (
     count INTEGER PRIMARY KEY,
@@ -253,24 +264,27 @@ CREATE TABLE IF NOT EXISTS map (
 db_connection.execute(shapes_schema)
 db_connection.commit()  
 
+#create shape data #NOT WORKING PROPERLY
 count = 0
 shape_id = 0
+#loop through all trips in the database
 for i in range(0,len(trips)):
     cursor.execute(f'SELECT stop_id, stop_sequence FROM stoptimes WHERE trip_id = ?', (trips[i][0],))
     stoptimes = cursor.fetchall()
     cursor.execute(f'SELECT direction_id FROM trips WHERE trip_id = ?', (trips[i][0],))
     direction = cursor.fetchall()
 
-    
+    #reverse the stoptimes in for inbound trips so the map is traversed in one direction
     if direction[0][0] == 1:#inbound
         stoptimes = stoptimes[::-1]
- 
+ #Generate the order of stops that will be visited (INCLUDES STOPS THAT ARE NOT SERVICED)
     stopsequence = []
-    for ii in range(len(stoptimes)-1, -1, -1):
+    for ii in range(len(stoptimes)-1, -1, -1):#loop from the last stop of the station going towards New York Penn
         cursor.execute(f'SELECT * FROM map WHERE stopid = ?', (stoptimes[ii][0],))
         stop = cursor.fetchone()
         stopsequence.insert(0, stop)
     print(stopsequence)
+    #problem is stops that are skipped are not included
 '''   shapesequence = []
     for ii in range(0,len(stopsequence)-1):
         print(stopsequence[ii+1][0])
@@ -278,6 +292,10 @@ for i in range(0,len(trips)):
         print(diverge)
 '''
 
+#generate updated GTFS files
+cursor.execute(f'SELECT * FROM routes')
+rows = cursor.fetchall()
+output('routes', rows)
 
 cursor.execute(f'SELECT * FROM stoptimes')
 rows = cursor.fetchall()
